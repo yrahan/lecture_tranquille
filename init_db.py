@@ -1,8 +1,13 @@
 import sqlite3
 import os
 
-def init_database():
-    """Initialise la base de données SQLite avec les tables et les données."""
+def init_database(force_reset=False):
+    """Initialise la base de données SQLite avec les tables et les données.
+
+    Args:
+        force_reset: Si True, supprime et recrée toutes les tables (pour réinitialisation locale).
+                    Si False, crée uniquement si la base n'existe pas (mode idempotent).
+    """
 
     # Créer le dossier images s'il n'existe pas
     os.makedirs("images", exist_ok=True)
@@ -11,11 +16,24 @@ def init_database():
     conn = sqlite3.connect("lecture.db")
     cursor = conn.cursor()
 
-    # Suppression des anciennes tables pour réinitialisation
-    cursor.execute("DROP TABLE IF EXISTS resultats")
-    cursor.execute("DROP TABLE IF EXISTS questions_ouvertes")
-    cursor.execute("DROP TABLE IF EXISTS qcm")
-    cursor.execute("DROP TABLE IF EXISTS textes")
+    # Vérifier si la base contient déjà des données
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='textes'")
+    table_exists = cursor.fetchone() is not None
+
+    if table_exists and not force_reset:
+        # Vérifier si des textes existent
+        cursor.execute("SELECT COUNT(*) FROM textes")
+        count = cursor.fetchone()[0]
+        if count > 0:
+            conn.close()
+            return  # Base déjà initialisée, ne rien faire
+
+    # Suppression des anciennes tables pour réinitialisation (seulement si force_reset ou première création)
+    if force_reset or not table_exists:
+        cursor.execute("DROP TABLE IF EXISTS resultats")
+        cursor.execute("DROP TABLE IF EXISTS questions_ouvertes")
+        cursor.execute("DROP TABLE IF EXISTS qcm")
+        cursor.execute("DROP TABLE IF EXISTS textes")
 
     # Création des tables
     cursor.execute("""
@@ -595,4 +613,5 @@ def init_database():
     print(f"- {len(textes_ce2)} textes CE2 (difficulté 1 à 10)")
 
 if __name__ == "__main__":
-    init_database()
+    # En ligne de commande, forcer la réinitialisation complète
+    init_database(force_reset=True)

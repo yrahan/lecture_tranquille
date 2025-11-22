@@ -3,6 +3,7 @@ import sqlite3
 import time
 import os
 from datetime import datetime
+from init_db import init_database
 
 # Configuration de la page
 st.set_page_config(
@@ -392,11 +393,9 @@ def create_placeholder_image(image_path, titre):
         return False
 
 def main():
-    # Vérifier si la base de données existe
+    # Initialiser la base de données si elle n'existe pas (mode idempotent)
     if not os.path.exists("lecture.db"):
-        st.error("⚠️ Base de données non trouvée. Veuillez exécuter `python init_db.py` d'abord.")
-        st.code("python init_db.py", language="bash")
-        return
+        init_database()
 
     # Titre principal
     st.title("📖 Lecture tranquille")
