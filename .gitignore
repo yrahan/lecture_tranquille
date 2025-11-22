@@ -1,0 +1,23 @@
+# Environnements Python / Conda / Mamba
+venv/
+.env/
+*.env
+*.egg-info/
+.venv/
+
+# Dossiers Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# VS Code
+.vscode/
+
+# Données locales
+lecture.db
+*.sqlite
+*.db
+
+# Autres fichiers temporaires
+.DS_Store

@@ -1,0 +1,691 @@
+import streamlit as st
+import sqlite3
+import time
+import os
+from datetime import datetime
+
+# Configuration de la page
+st.set_page_config(
+    page_title="Lecture tranquille",
+    page_icon="📖",
+    layout="centered"
+)
+
+def get_db_connection():
+    """Crée une connexion à la base de données SQLite."""
+    return sqlite3.connect("lecture.db", check_same_thread=False)
+
+def get_textes_by_niveau(niveau):
+    """Récupère tous les textes d'un niveau donné."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, titre, texte, theme, difficulte, image_path
+        FROM textes
+        WHERE niveau = ?
+        ORDER BY difficulte
+    """, (niveau,))
+    textes = cursor.fetchall()
+    conn.close()
+    return textes
+
+def get_qcm_by_texte(texte_id):
+    """Récupère les QCM d'un texte, triés par difficulté."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, question, option_a, option_b, option_c, reponse_correcte, ordre_difficulte
+        FROM qcm
+        WHERE texte_id = ?
+        ORDER BY ordre_difficulte
+    """, (texte_id,))
+    qcm = cursor.fetchall()
+    conn.close()
+    return qcm
+
+def get_questions_ouvertes_by_texte(texte_id):
+    """Récupère les questions ouvertes d'un texte, triées par difficulté."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, question, proposition_reponse, ordre_difficulte
+        FROM questions_ouvertes
+        WHERE texte_id = ?
+        ORDER BY ordre_difficulte
+    """, (texte_id,))
+    questions = cursor.fetchall()
+    conn.close()
+    return questions
+
+def save_resultat(texte_id, temps_secondes, mots_lus, mots_par_minute):
+    """Enregistre un résultat de lecture dans la base de données."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO resultats (texte_id, date_lecture, temps_secondes, mots_lus, mots_par_minute)
+        VALUES (?, ?, ?, ?, ?)
+    """, (texte_id, datetime.now().isoformat(), temps_secondes, mots_lus, mots_par_minute))
+    conn.commit()
+    conn.close()
+
+def compter_mots(texte):
+    """Compte le nombre de mots dans un texte."""
+    return len(texte.split())
+
+def create_placeholder_image(image_path, titre):
+    """Crée une icône illustrative style jeunesse sans texte."""
+    try:
+        from PIL import Image, ImageDraw
+
+        # Thèmes et leurs configurations visuelles (icônes simples)
+        themes = {
+            # Animaux
+            "chat": {
+                "bg": "#FFF5E6",
+                "shapes": [
+                    ("ellipse", "#FFB366", 150, 120, 250, 200),  # Corps
+                    ("ellipse", "#FFB366", 170, 80, 230, 130),   # Tête
+                    ("ellipse", "#333333", 185, 95, 195, 105),   # Œil
+                    ("ellipse", "#333333", 205, 95, 215, 105),   # Œil
+                    ("polygon", "#FFB366", [(150, 85), (160, 60), (175, 85)]),  # Oreille
+                    ("polygon", "#FFB366", [(225, 85), (240, 60), (250, 85)]),  # Oreille
+                ]
+            },
+            "chien": {
+                "bg": "#F5F0E6",
+                "shapes": [
+                    ("ellipse", "#8B4513", 140, 120, 260, 220),  # Corps
+                    ("ellipse", "#8B4513", 160, 70, 240, 140),   # Tête
+                    ("ellipse", "#333333", 180, 90, 190, 100),   # Œil
+                    ("ellipse", "#333333", 210, 90, 220, 100),   # Œil
+                    ("ellipse", "#5D3A1A", 190, 105, 210, 120),  # Museau
+                ]
+            },
+            "hamster": {
+                "bg": "#FFF8E1",
+                "shapes": [
+                    ("ellipse", "#D4A574", 150, 100, 250, 200),  # Corps rond
+                    ("ellipse", "#F5DEB3", 170, 130, 230, 180),  # Ventre
+                    ("ellipse", "#333333", 175, 120, 185, 130),  # Œil
+                    ("ellipse", "#333333", 215, 120, 225, 130),  # Œil
+                ]
+            },
+            # École
+            "ecole": {
+                "bg": "#E3F2FD",
+                "shapes": [
+                    ("rectangle", "#FFC107", 120, 100, 280, 220),  # Bâtiment
+                    ("polygon", "#FF5722", [(120, 100), (200, 50), (280, 100)]),  # Toit
+                    ("rectangle", "#795548", 180, 160, 220, 220),  # Porte
+                    ("rectangle", "#81D4FA", 140, 120, 160, 150),  # Fenêtre
+                    ("rectangle", "#81D4FA", 240, 120, 260, 150),  # Fenêtre
+                ]
+            },
+            "recre": {
+                "bg": "#E8F5E9",
+                "shapes": [
+                    ("rectangle", "#8BC34A", 0, 200, 400, 300),   # Sol
+                    ("ellipse", "#FF5722", 180, 100, 220, 140),   # Ballon
+                    ("ellipse", "#2196F3", 120, 160, 150, 190),   # Bille
+                    ("ellipse", "#9C27B0", 250, 150, 280, 180),   # Bille
+                ]
+            },
+            "spectacle": {
+                "bg": "#FCE4EC",
+                "shapes": [
+                    ("rectangle", "#9C27B0", 100, 180, 300, 250),  # Scène
+                    ("polygon", "#FFEB3B", [(200, 80), (180, 130), (220, 130)]),  # Étoile
+                    ("ellipse", "#4CAF50", 160, 120, 190, 180),   # Personnage
+                    ("ellipse", "#F44336", 210, 120, 240, 180),   # Personnage
+                ]
+            },
+            # Jeux et activités
+            "ballon": {
+                "bg": "#FFEBEE",
+                "shapes": [
+                    ("ellipse", "#F44336", 140, 80, 260, 200),    # Ballon
+                    ("ellipse", "#FFCDD2", 160, 100, 200, 140),   # Reflet
+                ]
+            },
+            "velo": {
+                "bg": "#E0F7FA",
+                "shapes": [
+                    ("ellipse", "#333333", 100, 150, 160, 210),   # Roue arrière
+                    ("ellipse", "#333333", 240, 150, 300, 210),   # Roue avant
+                    ("polygon", "#2196F3", [(130, 180), (200, 120), (270, 180), (200, 160)]),  # Cadre
+                ]
+            },
+            "piscine": {
+                "bg": "#E3F2FD",
+                "shapes": [
+                    ("rectangle", "#81D4FA", 80, 120, 320, 220),  # Eau
+                    ("ellipse", "#BBDEFB", 120, 140, 180, 180),   # Vague
+                    ("ellipse", "#BBDEFB", 200, 150, 260, 190),   # Vague
+                ]
+            },
+            "foot": {
+                "bg": "#E8F5E9",
+                "shapes": [
+                    ("rectangle", "#8BC34A", 0, 200, 400, 300),   # Pelouse
+                    ("ellipse", "#FFFFFF", 160, 100, 240, 180),   # Ballon
+                    ("polygon", "#333333", [(185, 120), (200, 110), (215, 120), (210, 135), (190, 135)]),  # Pentagone
+                ]
+            },
+            # Quotidien
+            "maman": {
+                "bg": "#FCE4EC",
+                "shapes": [
+                    ("ellipse", "#F48FB1", 160, 80, 240, 160),    # Tête
+                    ("ellipse", "#F48FB1", 140, 150, 260, 250),   # Corps
+                    ("ellipse", "#E91E63", 170, 170, 230, 220),   # Cœur/tablier
+                ]
+            },
+            "dejeuner": {
+                "bg": "#FFF8E1",
+                "shapes": [
+                    ("rectangle", "#FFCC80", 100, 150, 300, 250), # Table
+                    ("ellipse", "#FFFFFF", 150, 110, 220, 160),   # Bol
+                    ("rectangle", "#D7CCC8", 240, 120, 270, 170), # Verre
+                ]
+            },
+            "nuit": {
+                "bg": "#303F9F",
+                "shapes": [
+                    ("ellipse", "#FFF59D", 260, 60, 320, 120),    # Lune
+                    ("ellipse", "#FFFFFF", 120, 80, 130, 90),     # Étoile
+                    ("ellipse", "#FFFFFF", 160, 100, 170, 110),   # Étoile
+                    ("ellipse", "#FFFFFF", 200, 70, 210, 80),     # Étoile
+                ]
+            },
+            # Nature et météo
+            "parc": {
+                "bg": "#E8F5E9",
+                "shapes": [
+                    ("rectangle", "#8BC34A", 0, 200, 400, 300),   # Herbe
+                    ("ellipse", "#4CAF50", 100, 100, 180, 180),   # Arbre
+                    ("rectangle", "#795548", 130, 180, 150, 220), # Tronc
+                    ("ellipse", "#FFEB3B", 280, 50, 340, 110),    # Soleil
+                ]
+            },
+            "jardin": {
+                "bg": "#E8F5E9",
+                "shapes": [
+                    ("rectangle", "#8D6E63", 80, 180, 320, 260),  # Terre
+                    ("ellipse", "#F44336", 120, 130, 160, 170),   # Tomate
+                    ("ellipse", "#F44336", 200, 140, 240, 180),   # Tomate
+                    ("polygon", "#4CAF50", [(140, 130), (145, 100), (150, 130)]),  # Feuille
+                ]
+            },
+            "pluie": {
+                "bg": "#ECEFF1",
+                "shapes": [
+                    ("ellipse", "#78909C", 120, 80, 280, 160),    # Nuage
+                    ("ellipse", "#2196F3", 150, 180, 160, 200),   # Goutte
+                    ("ellipse", "#2196F3", 200, 190, 210, 210),   # Goutte
+                    ("ellipse", "#2196F3", 250, 175, 260, 195),   # Goutte
+                ]
+            },
+            "tempete": {
+                "bg": "#455A64",
+                "shapes": [
+                    ("ellipse", "#78909C", 100, 60, 300, 150),    # Nuage
+                    ("polygon", "#FFEB3B", [(200, 150), (180, 200), (210, 190), (190, 240)]),  # Éclair
+                ]
+            },
+            "orage": {
+                "bg": "#37474F",
+                "shapes": [
+                    ("ellipse", "#607D8B", 100, 60, 300, 140),    # Nuage
+                    ("polygon", "#FFEB3B", [(200, 140), (170, 200), (210, 180), (180, 250)]),  # Éclair
+                ]
+            },
+            "camping": {
+                "bg": "#E8F5E9",
+                "shapes": [
+                    ("polygon", "#FF7043", [(200, 100), (120, 220), (280, 220)]),  # Tente
+                    ("rectangle", "#795548", 185, 180, 215, 220), # Entrée
+                    ("ellipse", "#81D4FA", 80, 180, 160, 230),    # Lac
+                ]
+            },
+            # Cuisine
+            "gateau": {
+                "bg": "#FBE9E7",
+                "shapes": [
+                    ("ellipse", "#D7CCC8", 100, 180, 300, 260),   # Assiette
+                    ("rectangle", "#8D6E63", 140, 100, 260, 200), # Gâteau
+                    ("rectangle", "#FFEB3B", 195, 70, 205, 100),  # Bougie
+                    ("ellipse", "#FF5722", 193, 55, 207, 70),     # Flamme
+                ]
+            },
+            # Lecture et découverte
+            "biblio": {
+                "bg": "#F3E5F5",
+                "shapes": [
+                    ("rectangle", "#CE93D8", 80, 80, 180, 240),   # Étagère
+                    ("rectangle", "#F48FB1", 90, 90, 110, 150),   # Livre
+                    ("rectangle", "#90CAF9", 115, 100, 135, 150), # Livre
+                    ("rectangle", "#A5D6A7", 140, 85, 160, 150),  # Livre
+                    ("rectangle", "#FFCC80", 220, 120, 300, 180), # Livre ouvert
+                ]
+            },
+            "lettre": {
+                "bg": "#E8EAF6",
+                "shapes": [
+                    ("rectangle", "#FFFFFF", 120, 100, 280, 200), # Enveloppe
+                    ("polygon", "#C5CAE9", [(120, 100), (200, 150), (280, 100)]),  # Rabat
+                    ("ellipse", "#F44336", 240, 160, 270, 190),   # Cœur/timbre
+                ]
+            },
+            "musee": {
+                "bg": "#EFEBE9",
+                "shapes": [
+                    ("rectangle", "#8D6E63", 100, 120, 300, 240), # Bâtiment
+                    ("polygon", "#795548", [(100, 120), (200, 60), (300, 120)]),  # Fronton
+                    ("rectangle", "#FFCC80", 140, 160, 170, 240), # Colonne
+                    ("rectangle", "#FFCC80", 230, 160, 260, 240), # Colonne
+                ]
+            },
+            "zoo": {
+                "bg": "#FFF3E0",
+                "shapes": [
+                    ("ellipse", "#FFB74D", 120, 100, 200, 180),   # Lion
+                    ("ellipse", "#FFE0B2", 140, 130, 180, 160),   # Crinière
+                    ("ellipse", "#FFCC80", 250, 80, 280, 200),    # Girafe cou
+                    ("ellipse", "#FFCC80", 240, 60, 290, 100),    # Girafe tête
+                ]
+            },
+            # Autres
+            "rentree": {
+                "bg": "#E3F2FD",
+                "shapes": [
+                    ("rectangle", "#2196F3", 140, 100, 260, 200), # Cartable
+                    ("rectangle", "#1976D2", 160, 80, 240, 110),  # Rabat
+                    ("ellipse", "#FFC107", 180, 130, 220, 170),   # Boucle
+                ]
+            },
+            "cabane": {
+                "bg": "#E8F5E9",
+                "shapes": [
+                    ("rectangle", "#8D6E63", 120, 140, 280, 240), # Cabane
+                    ("polygon", "#795548", [(110, 140), (200, 80), (290, 140)]),  # Toit
+                    ("rectangle", "#4CAF50", 170, 180, 230, 240), # Entrée
+                ]
+            },
+            "demenagement": {
+                "bg": "#FFF8E1",
+                "shapes": [
+                    ("rectangle", "#8D6E63", 100, 140, 300, 240), # Carton
+                    ("rectangle", "#A1887F", 100, 140, 300, 160), # Rabat
+                    ("ellipse", "#F48FB1", 180, 80, 220, 120),    # Cœur
+                ]
+            },
+            "marche": {
+                "bg": "#FFF3E0",
+                "shapes": [
+                    ("rectangle", "#FF8A65", 100, 120, 200, 200), # Étal
+                    ("ellipse", "#F44336", 120, 100, 150, 130),   # Pomme
+                    ("ellipse", "#4CAF50", 160, 100, 190, 130),   # Pomme
+                    ("ellipse", "#FF9800", 250, 140, 280, 200),   # Carotte
+                ]
+            },
+            "default": {
+                "bg": "#F5F5F5",
+                "shapes": [
+                    ("ellipse", "#BBDEFB", 120, 100, 200, 180),
+                    ("ellipse", "#C8E6C9", 200, 120, 280, 200),
+                ]
+            }
+        }
+
+        # Déterminer le thème depuis le nom de fichier ou titre
+        filename = os.path.basename(image_path).lower()
+        titre_lower = titre.lower()
+
+        theme_key = "default"
+
+        # Chercher dans le nom de fichier d'abord
+        for key in themes.keys():
+            if key in filename:
+                theme_key = key
+                break
+
+        # Si pas trouvé, chercher dans le titre
+        if theme_key == "default":
+            for key in themes.keys():
+                if key in titre_lower:
+                    theme_key = key
+                    break
+
+        # Cas spéciaux basés sur le titre
+        if theme_key == "default":
+            if "chat" in titre_lower or "minou" in titre_lower or "caramel" in titre_lower:
+                theme_key = "chat"
+            elif "chien" in titre_lower or "filou" in titre_lower:
+                theme_key = "chien"
+            elif "école" in titre_lower or "rentrée" in titre_lower:
+                theme_key = "ecole"
+            elif "bibliothèque" in titre_lower:
+                theme_key = "biblio"
+            elif "correspondant" in titre_lower:
+                theme_key = "lettre"
+
+        theme = themes[theme_key]
+
+        # Créer l'image
+        img = Image.new('RGB', (400, 300), color=theme["bg"])
+        draw = ImageDraw.Draw(img)
+
+        # Dessiner les formes
+        for shape in theme["shapes"]:
+            if shape[0] == "ellipse":
+                draw.ellipse([shape[2], shape[3], shape[4], shape[5]], fill=shape[1])
+            elif shape[0] == "rectangle":
+                draw.rectangle([shape[2], shape[3], shape[4], shape[5]], fill=shape[1])
+            elif shape[0] == "polygon":
+                draw.polygon(shape[2], fill=shape[1])
+
+        # Sauvegarder
+        os.makedirs(os.path.dirname(image_path), exist_ok=True)
+        img.save(image_path)
+        return True
+    except Exception:
+        return False
+
+def main():
+    # Vérifier si la base de données existe
+    if not os.path.exists("lecture.db"):
+        st.error("⚠️ Base de données non trouvée. Veuillez exécuter `python init_db.py` d'abord.")
+        st.code("python init_db.py", language="bash")
+        return
+
+    # Titre principal
+    st.title("📖 Lecture tranquille")
+    st.markdown("### Pour les enfants de CP, CE1 et CE2")
+    st.markdown("""
+    Bienvenue ! Cette application t'aide à progresser en lecture, à ton rythme.
+    Pas de stress, pas de pression : ici, on lit tranquillement et on s'amuse ! 🌟
+    """)
+
+    st.markdown("---")
+
+    # Instructions pour l'adulte
+    with st.expander("📋 Guide pour l'adulte accompagnant"):
+        st.markdown("""
+        **Comment utiliser l'application en 3 étapes :**
+
+        1. **Choisir** le niveau (CP, CE1 ou CE2) et un texte adapté
+        2. **Mesurer la fluence** : démarrer le chrono quand l'enfant lit à voix haute, puis l'arrêter
+        3. **Vérifier la compréhension** : répondre aux questions ensemble
+
+        💡 **Le chronomètre n'est qu'un outil ponctuel** : utilisez-le de temps en temps, sans pression. L'essentiel est que l'enfant prenne plaisir à lire, à découvrir l'histoire, à s'exprimer et à partager ce moment avec vous.
+
+        *Restez bienveillant et encourageant. L'objectif est de progresser en confiance !*
+        """)
+
+    st.markdown("---")
+
+    # Initialisation du session_state
+    if 'is_reading' not in st.session_state:
+        st.session_state.is_reading = False
+    if 'start_time' not in st.session_state:
+        st.session_state.start_time = None
+    if 'elapsed_time' not in st.session_state:
+        st.session_state.elapsed_time = None
+    if 'reading_finished' not in st.session_state:
+        st.session_state.reading_finished = False
+    if 'qcm_validated' not in st.session_state:
+        st.session_state.qcm_validated = {}
+    if 'show_proposition' not in st.session_state:
+        st.session_state.show_proposition = {}
+    if 'result_saved' not in st.session_state:
+        st.session_state.result_saved = False
+    if 'session_id' not in st.session_state:
+        st.session_state.session_id = 0
+
+    # Section 1 : Choix du texte
+    st.header("📚 Étape 1 : Choisis ton texte")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        niveau = st.selectbox("Niveau :", ["CP", "CE1", "CE2"])
+
+    # Récupérer les textes du niveau
+    textes = get_textes_by_niveau(niveau)
+
+    if not textes:
+        st.warning("Aucun texte trouvé pour ce niveau.")
+        return
+
+    with col2:
+        titres = [t[1] for t in textes]
+        titre_selectionne = st.selectbox("Texte :", titres)
+
+    # Trouver le texte sélectionné
+    texte_data = None
+    for t in textes:
+        if t[1] == titre_selectionne:
+            texte_data = t
+            break
+
+    if texte_data is None:
+        return
+
+    texte_id, titre, texte_contenu, theme, difficulte, image_path = texte_data
+    nb_mots_total = compter_mots(texte_contenu)
+
+    # Générer l'image si elle n'existe pas
+    if image_path and not os.path.exists(image_path):
+        create_placeholder_image(image_path, titre)
+
+    # Affichage du titre avec l'icône - design responsive
+    if image_path and os.path.exists(image_path):
+        # Utiliser du HTML/CSS pour un alignement parfait et responsive
+        import base64
+        with open(image_path, "rb") as img_file:
+            img_base64 = base64.b64encode(img_file.read()).decode()
+
+        st.markdown(f"""
+        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px; flex-wrap: wrap;">
+            <img src="data:image/png;base64,{img_base64}"
+                 style="width: 50px; height: 50px; object-fit: cover; border-radius: 8px; flex-shrink: 0;">
+            <div style="flex: 1; min-width: 200px;">
+                <h3 style="margin: 0; font-size: 1.3em; line-height: 1.2;">{titre}</h3>
+                <p style="margin: 4px 0 0 0; font-size: 0.85em; color: #666;">{theme} • {difficulte}</p>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.subheader(f"📄 {titre}")
+
+    st.info(texte_contenu)
+    st.caption(f"📝 Ce texte contient **{nb_mots_total} mots**.")
+
+    st.markdown("---")
+
+    # Section 2 : Mesure de fluence
+    st.header("⏱️ Étape 2 : Mesure ta vitesse de lecture")
+
+    col_start, col_stop = st.columns(2)
+
+    with col_start:
+        if st.button("▶️ Démarrer la lecture", disabled=st.session_state.is_reading, use_container_width=True):
+            st.session_state.is_reading = True
+            st.session_state.start_time = time.time()
+            st.session_state.elapsed_time = None
+            st.session_state.reading_finished = False
+            st.session_state.result_saved = False
+            st.rerun()
+
+    with col_stop:
+        if st.button("⏹️ Arrêter la lecture", disabled=not st.session_state.is_reading, use_container_width=True):
+            st.session_state.is_reading = False
+            st.session_state.elapsed_time = time.time() - st.session_state.start_time
+            st.session_state.reading_finished = True
+            st.rerun()
+
+    # Affichage de l'état
+    if st.session_state.is_reading:
+        st.warning("⏱️ **Lecture en cours...** Lis à voix haute, tranquillement !")
+
+    # Résultats de fluence
+    if st.session_state.reading_finished and st.session_state.elapsed_time is not None:
+        elapsed_seconds = st.session_state.elapsed_time
+        elapsed_minutes = elapsed_seconds / 60
+
+        st.success(f"⏱️ **Temps de lecture : {elapsed_seconds:.1f} secondes**")
+
+        st.markdown("##### Combien de mots as-tu lus ?")
+        st.caption("Par défaut, c'est le texte entier. L'adulte peut ajuster si besoin.")
+
+        mots_lus = st.number_input(
+            "Nombre de mots lus :",
+            min_value=1,
+            max_value=nb_mots_total,
+            value=nb_mots_total,
+            step=1
+        )
+
+        # Calcul des mots par minute
+        if elapsed_minutes > 0:
+            mots_par_minute = mots_lus / elapsed_minutes
+
+            st.markdown("---")
+            st.markdown(f"""
+            ### 🎉 Bravo, c'est super !
+
+            Tu as lu **{mots_lus} mots** en **{elapsed_seconds:.1f} secondes**.
+
+            **➡️ Ta vitesse : {mots_par_minute:.0f} mots par minute**
+
+            Continue comme ça, tu progresses bien ! 📚✨
+            """)
+
+            # Sauvegarder le résultat
+            if not st.session_state.result_saved:
+                save_resultat(texte_id, elapsed_seconds, mots_lus, mots_par_minute)
+                st.session_state.result_saved = True
+
+    st.markdown("---")
+
+    # Section 3 : Compréhension
+    st.header("🧠 Étape 3 : As-tu bien compris ?")
+    st.markdown("Réponds aux questions pour vérifier que tu as bien compris le texte. Les questions vont du plus simple au plus réfléchi. Pas de stress, c'est pour apprendre ! 😊")
+
+    # Récupérer les questions
+    qcm_list = get_qcm_by_texte(texte_id)
+    questions_ouvertes = get_questions_ouvertes_by_texte(texte_id)
+
+    # QCM
+    if qcm_list:
+        st.subheader("📝 Questions à choix multiple")
+        st.caption("Du plus simple au plus difficile")
+
+        for i, qcm in enumerate(qcm_list):
+            qcm_id, question, opt_a, opt_b, opt_c, reponse_correcte, ordre = qcm
+            key_qcm = f"{texte_id}_qcm_{qcm_id}"
+
+            # Indicateur de difficulté
+            if ordre == 1:
+                diff_icon = "🟢"
+            elif ordre == 2:
+                diff_icon = "🟡"
+            else:
+                diff_icon = "🟠"
+
+            st.markdown(f"**{diff_icon} Question {i+1} : {question}**")
+
+            options = [opt_a, opt_b, opt_c]
+            reponse = st.radio(
+                "Choisis ta réponse :",
+                options,
+                key=f"radio_{key_qcm}_{st.session_state.session_id}",
+                index=None,
+                label_visibility="collapsed"
+            )
+
+            col_valider, col_espace = st.columns([1, 3])
+            with col_valider:
+                if st.button("Valider", key=f"btn_{key_qcm}"):
+                    st.session_state.qcm_validated[key_qcm] = reponse
+
+            if key_qcm in st.session_state.qcm_validated:
+                if st.session_state.qcm_validated[key_qcm] == reponse_correcte:
+                    st.success("✅ Bravo, c'est la bonne réponse ! 🌟")
+                else:
+                    st.info(f"💡 Ce n'est pas tout à fait ça. La bonne réponse était : **{reponse_correcte}**. Ce n'est pas grave, on peut relire un petit passage ensemble 🙂")
+
+            st.markdown("")
+
+    # Questions ouvertes
+    if questions_ouvertes:
+        st.subheader("✍️ Questions ouvertes")
+        st.caption("Écris ta réponse, puis tu peux voir une proposition pour comparer.")
+
+        for i, question in enumerate(questions_ouvertes):
+            q_id, q_texte, proposition, ordre = question
+            key_open = f"{texte_id}_open_{q_id}"
+
+            # Indicateur de difficulté
+            if ordre == 1:
+                diff_icon = "🟢"
+            elif ordre == 2:
+                diff_icon = "🟡"
+            else:
+                diff_icon = "🟠"
+
+            st.markdown(f"**{diff_icon} Question {i+1} : {q_texte}**")
+
+            st.text_area(
+                "Ta réponse :",
+                key=f"textarea_{key_open}_{st.session_state.session_id}",
+                height=80,
+                label_visibility="collapsed"
+            )
+
+            if st.button("💡 Voir une proposition de réponse", key=f"btn_prop_{key_open}"):
+                st.session_state.show_proposition[key_open] = True
+
+            if st.session_state.show_proposition.get(key_open, False):
+                st.info(f"**Proposition de réponse :** {proposition}")
+
+            st.markdown("")
+
+    st.markdown("---")
+
+    # Section 4 : Repères de fluence
+    with st.expander("📊 Repères de vitesse de lecture en France"):
+        st.markdown("""
+        Voici des repères pour se situer. **Chacun avance à son rythme**, l'essentiel est de progresser tranquillement ! 🌱
+
+        | Niveau | Vitesse moyenne (fin d'année) |
+        |--------|------------------------------|
+        | CP | environ 50 mots/minute |
+        | CE1 | environ 70 mots/minute |
+        | CE2 | environ 90-110 mots/minute |
+
+        *Ces chiffres sont des moyennes. Certains enfants lisent plus vite, d'autres moins vite, et c'est très bien comme ça !*
+
+        🟢 Question facile • 🟡 Question moyenne • 🟠 Question plus réfléchie
+        """)
+
+    st.markdown("---")
+
+    # Bouton pour recommencer
+    if st.button("🔄 Nouvelle lecture", use_container_width=True):
+        # Effacer les états de lecture
+        st.session_state.is_reading = False
+        st.session_state.start_time = None
+        st.session_state.elapsed_time = None
+        st.session_state.reading_finished = False
+        st.session_state.qcm_validated = {}
+        st.session_state.show_proposition = {}
+        st.session_state.result_saved = False
+
+        # Incrémenter session_id pour forcer la réinitialisation des widgets
+        st.session_state.session_id += 1
+
+        st.rerun()
+
+if __name__ == "__main__":
+    main()
