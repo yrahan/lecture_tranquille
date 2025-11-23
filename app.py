@@ -2,8 +2,17 @@ import streamlit as st
 import sqlite3
 import time
 import os
+import re
 from datetime import datetime
 from init_db import init_database
+from openai import OpenAI
+
+# Configuration de la page - DOIT être en premier
+st.set_page_config(
+    page_title="Lecture tranquille",
+    page_icon="📖",
+    layout="centered"
+)
 
 # Mapping entre tranches d'âge et niveaux scolaires
 # Ce mapping permet de garder la compatibilité avec la base de données
@@ -24,12 +33,143 @@ def niveau_vers_age(niveau):
     """Convertit un niveau scolaire en tranche d'âge pour l'affichage."""
     return NIVEAUX_VERS_AGES.get(niveau, "6–7 ans")
 
-# Configuration de la page
-st.set_page_config(
-    page_title="Lecture tranquille",
-    page_icon="📖",
-    layout="centered"
-)
+# Liste de mots interdits pour le filtrage du contenu enfant
+# Cette liste est volontairement basique et peut être enrichie
+MOTS_INTERDITS = [
+    # Violence
+    "tuer", "mort", "sang", "arme", "pistolet", "fusil", "couteau", "bombe",
+    "guerre", "meurtre", "assassin", "violence", "frapper", "battre",
+    # Contenu sexuel
+    "sexe", "nu", "nue", "penis", "vagin", "seins", "pornographie",
+    # Drogues
+    "drogue", "cocaine", "heroine", "cannabis", "alcool", "cigarette", "fumer",
+    # Insultes communes
+    "merde", "putain", "connard", "salaud", "enculer", "nique", "bordel",
+    "con", "pute", "bite", "couille"
+]
+
+# Textes de secours par mode (utilisés si la saisie est vidée après filtrage)
+TEXTES_SECOURS = {
+    "Histoire": "Raconte une histoire douce et joyeuse pour un enfant, avec des animaux et de l'amitié.",
+    "Méditation pour dormir": "Propose une méditation très calme pour aider un enfant à se détendre avant de dormir.",
+    "Vulgarisation scientifique": "Explique simplement un phénomène de la nature adapté à un enfant, comme pourquoi le ciel est bleu ou comment pousse une plante."
+}
+
+# Longueur cible du texte selon l'âge
+LONGUEUR_PAR_AGE = {
+    "6–7 ans": "100 à 150 mots",
+    "7–8 ans": "150 à 200 mots",
+    "8–9 ans": "200 à 250 mots"
+}
+
+def contains_forbidden_words(user_input):
+    """
+    Vérifie si la saisie contient des mots interdits.
+
+    Returns:
+        True si des mots interdits sont détectés, False sinon
+    """
+    if not user_input:
+        return False
+
+    texte_lower = user_input.lower()
+    for mot in MOTS_INTERDITS:
+        pattern = r'\b' + re.escape(mot) + r'\b'
+        if re.search(pattern, texte_lower):
+            return True
+    return False
+
+def sanitize_user_input(user_input, mode):
+    """
+    Nettoie la saisie utilisateur.
+    Si des mots inappropriés sont détectés, retourne directement le texte de secours.
+
+    Args:
+        user_input: Le texte saisi par l'utilisateur
+        mode: Le type de contenu (Histoire, Méditation, Vulgarisation)
+
+    Returns:
+        Le texte de secours si des mots interdits sont détectés, sinon le texte original
+    """
+    if not user_input:
+        return TEXTES_SECOURS.get(mode, TEXTES_SECOURS["Histoire"])
+
+    # Si des mots interdits sont détectés, utiliser directement le texte de secours
+    if contains_forbidden_words(user_input):
+        return TEXTES_SECOURS.get(mode, TEXTES_SECOURS["Histoire"])
+
+    return user_input
+
+def generate_ai_text(age_range, mode, user_input, existing_text=None):
+    """
+    Génère ou modifie un texte adapté aux enfants via l'API OpenRouter.
+
+    Args:
+        age_range: La tranche d'âge (ex: "6–7 ans")
+        mode: Le type de contenu (Histoire, Méditation pour dormir, Vulgarisation scientifique)
+        user_input: La saisie de l'utilisateur (déjà nettoyée)
+        existing_text: Le texte existant à modifier (optionnel)
+
+    Returns:
+        Le texte généré ou modifié, ou un message d'erreur
+    """
+    # Récupérer la clé API depuis les secrets Streamlit
+    try:
+        api_key = st.secrets["OPENROUTER_API_KEY"]
+    except KeyError:
+        return "❌ Erreur de configuration : la clé API n'est pas configurée."
+
+    # Créer le client OpenAI pour OpenRouter
+    client = OpenAI(
+        api_key=api_key,
+        base_url="https://openrouter.ai/api/v1"
+    )
+
+    # Longueur cible selon l'âge
+    longueur = LONGUEUR_PAR_AGE.get(age_range, "150 mots")
+
+    # Construire le prompt système
+    system_prompt = f"""Tu es une intelligence artificielle bienveillante qui écrit en français pour des enfants de {age_range}.
+
+Règles à suivre :
+- Écris des phrases courtes et simples
+- Utilise un vocabulaire adapté à l'âge
+- Adopte un ton chaleureux et encourageant
+- Longueur cible : {longueur}
+- INTERDICTIONS ABSOLUES : pas de violence, pas de contenu sexuel, pas de propos effrayants, haineux ou inappropriés pour des enfants
+
+Type de contenu demandé : {mode}
+"""
+
+    # Si un texte existe déjà, on le modifie selon les instructions
+    if existing_text:
+        user_prompt = f"""Voici un texte existant :
+
+{existing_text}
+
+Modifie ce texte selon cette instruction : {user_input}
+
+Réécris le texte complet en appliquant la modification demandée, en gardant le même style et la même longueur."""
+    else:
+        # Adapter le prompt utilisateur selon le mode
+        if mode == "Histoire":
+            user_prompt = f"Écris une histoire douce et imaginative à partir de cette idée : {user_input}"
+        elif mode == "Méditation pour dormir":
+            user_prompt = f"Écris une méditation calme et apaisante pour aider un enfant à s'endormir, inspirée par : {user_input}. Le texte sera lu par un parent à voix douce."
+        else:  # Vulgarisation scientifique
+            user_prompt = f"Explique de façon simple et concrète, avec des exemples du quotidien : {user_input}"
+
+    try:
+        response = client.chat.completions.create(
+            model="meta-llama/llama-3.2-3b-instruct:free",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"😔 Désolé, je n'arrive pas à générer le texte pour le moment. Réessaie plus tard."
 
 def get_db_connection():
     """Crée une connexion à la base de données SQLite."""
@@ -442,7 +582,7 @@ def main():
 
     st.markdown("---")
 
-    # Initialisation du session_state
+    # Initialisation du session_state (partagé entre les onglets)
     if 'is_reading' not in st.session_state:
         st.session_state.is_reading = False
     if 'start_time' not in st.session_state:
@@ -459,252 +599,350 @@ def main():
         st.session_state.result_saved = False
     if 'session_id' not in st.session_state:
         st.session_state.session_id = 0
+    if 'generated_text' not in st.session_state:
+        st.session_state.generated_text = None
 
-    # Section 1 : Choix du texte
-    st.header("📚 Étape 1 : Choisis ton texte")
+    # Navigation par onglets
+    tab_lecture, tab_creation = st.tabs(["📖 Lecture", "✨ Création IA"])
 
-    col1, col2 = st.columns(2)
+    # ========== ONGLET LECTURE ==========
+    with tab_lecture:
+        # Section 1 : Choix du texte
+        st.header("📚 Étape 1 : Choisis ton texte")
 
-    with col1:
-        tranche_age = st.selectbox("Ton âge :", list(AGES_VERS_NIVEAUX.keys()))
-        niveau = age_vers_niveau(tranche_age)
+        col1, col2 = st.columns(2)
 
-    # Récupérer les textes du niveau
-    textes = get_textes_by_niveau(niveau)
+        with col1:
+            tranche_age = st.selectbox("Ton âge :", list(AGES_VERS_NIVEAUX.keys()), key="lecture_age")
+            niveau = age_vers_niveau(tranche_age)
 
-    if not textes:
-        st.warning("Aucun texte trouvé pour ce niveau.")
-        return
+        # Récupérer les textes du niveau
+        textes = get_textes_by_niveau(niveau)
 
-    with col2:
-        titres = [t[1] for t in textes]
-        titre_selectionne = st.selectbox("Texte :", titres)
+        if not textes:
+            st.warning("Aucun texte trouvé pour cet âge.")
+        else:
+            with col2:
+                titres = [t[1] for t in textes]
+                titre_selectionne = st.selectbox("Texte :", titres)
 
-    # Trouver le texte sélectionné
-    texte_data = None
-    for t in textes:
-        if t[1] == titre_selectionne:
-            texte_data = t
-            break
+            # Trouver le texte sélectionné
+            texte_data = None
+            for t in textes:
+                if t[1] == titre_selectionne:
+                    texte_data = t
+                    break
 
-    if texte_data is None:
-        return
+            if texte_data:
+                texte_id, titre, texte_contenu, theme, difficulte, image_path = texte_data
+                nb_mots_total = compter_mots(texte_contenu)
 
-    texte_id, titre, texte_contenu, theme, difficulte, image_path = texte_data
-    nb_mots_total = compter_mots(texte_contenu)
+                # Générer l'image si elle n'existe pas
+                if image_path and not os.path.exists(image_path):
+                    create_placeholder_image(image_path, titre)
 
-    # Générer l'image si elle n'existe pas
-    if image_path and not os.path.exists(image_path):
-        create_placeholder_image(image_path, titre)
+                # Affichage du titre avec l'icône - design responsive
+                if image_path and os.path.exists(image_path):
+                    # Utiliser du HTML/CSS pour un alignement parfait et responsive
+                    import base64
+                    with open(image_path, "rb") as img_file:
+                        img_base64 = base64.b64encode(img_file.read()).decode()
 
-    # Affichage du titre avec l'icône - design responsive
-    if image_path and os.path.exists(image_path):
-        # Utiliser du HTML/CSS pour un alignement parfait et responsive
-        import base64
-        with open(image_path, "rb") as img_file:
-            img_base64 = base64.b64encode(img_file.read()).decode()
-
-        st.markdown(f"""
-        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px; flex-wrap: wrap;">
-            <img src="data:image/png;base64,{img_base64}"
-                 style="width: 50px; height: 50px; object-fit: cover; border-radius: 8px; flex-shrink: 0;">
-            <div style="flex: 1; min-width: 200px;">
-                <h3 style="margin: 0; font-size: 1.3em; line-height: 1.2;">{titre}</h3>
-                <p style="margin: 4px 0 0 0; font-size: 0.85em; color: #666;">{theme} • {difficulte}</p>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        st.subheader(f"📄 {titre}")
-
-    st.info(texte_contenu)
-    st.caption(f"📝 Ce texte contient **{nb_mots_total} mots**.")
-
-    st.markdown("---")
-
-    # Section 2 : Mesure de fluence
-    st.header("⏱️ Étape 2 : Mesure ta vitesse de lecture")
-
-    col_start, col_stop = st.columns(2)
-
-    with col_start:
-        if st.button("▶️ Démarrer la lecture", disabled=st.session_state.is_reading, use_container_width=True):
-            st.session_state.is_reading = True
-            st.session_state.start_time = time.time()
-            st.session_state.elapsed_time = None
-            st.session_state.reading_finished = False
-            st.session_state.result_saved = False
-            st.rerun()
-
-    with col_stop:
-        if st.button("⏹️ Arrêter la lecture", disabled=not st.session_state.is_reading, use_container_width=True):
-            st.session_state.is_reading = False
-            st.session_state.elapsed_time = time.time() - st.session_state.start_time
-            st.session_state.reading_finished = True
-            st.rerun()
-
-    # Affichage de l'état
-    if st.session_state.is_reading:
-        st.warning("⏱️ **Lecture en cours...** Lis à voix haute, tranquillement !")
-
-    # Résultats de fluence
-    if st.session_state.reading_finished and st.session_state.elapsed_time is not None:
-        elapsed_seconds = st.session_state.elapsed_time
-        elapsed_minutes = elapsed_seconds / 60
-
-        st.success(f"⏱️ **Temps de lecture : {elapsed_seconds:.1f} secondes**")
-
-        st.markdown("##### Combien de mots as-tu lus ?")
-        st.caption("Par défaut, c'est le texte entier. L'adulte peut ajuster si besoin.")
-
-        mots_lus = st.number_input(
-            "Nombre de mots lus :",
-            min_value=1,
-            max_value=nb_mots_total,
-            value=nb_mots_total,
-            step=1
-        )
-
-        # Calcul des mots par minute
-        if elapsed_minutes > 0:
-            mots_par_minute = mots_lus / elapsed_minutes
-
-            st.markdown("---")
-            st.markdown(f"""
-            ### 🎉 Bravo, c'est super !
-
-            Tu as lu **{mots_lus} mots** en **{elapsed_seconds:.1f} secondes**.
-
-            **➡️ Ta vitesse : {mots_par_minute:.0f} mots par minute**
-
-            Continue comme ça, tu progresses bien ! 📚✨
-            """)
-
-            # Sauvegarder le résultat
-            if not st.session_state.result_saved:
-                save_resultat(texte_id, elapsed_seconds, mots_lus, mots_par_minute)
-                st.session_state.result_saved = True
-
-    st.markdown("---")
-
-    # Section 3 : Compréhension
-    st.header("🧠 Étape 3 : As-tu bien compris ?")
-    st.markdown("Réponds aux questions pour vérifier que tu as bien compris le texte. Les questions vont du plus simple au plus réfléchi. Pas de stress, c'est pour apprendre ! 😊")
-
-    # Récupérer les questions
-    qcm_list = get_qcm_by_texte(texte_id)
-    questions_ouvertes = get_questions_ouvertes_by_texte(texte_id)
-
-    # QCM
-    if qcm_list:
-        st.subheader("📝 Questions à choix multiple")
-        st.caption("Du plus simple au plus difficile")
-
-        for i, qcm in enumerate(qcm_list):
-            qcm_id, question, opt_a, opt_b, opt_c, reponse_correcte, ordre = qcm
-            key_qcm = f"{texte_id}_qcm_{qcm_id}"
-
-            # Indicateur de difficulté
-            if ordre == 1:
-                diff_icon = "🟢"
-            elif ordre == 2:
-                diff_icon = "🟡"
-            else:
-                diff_icon = "🟠"
-
-            st.markdown(f"**{diff_icon} Question {i+1} : {question}**")
-
-            options = [opt_a, opt_b, opt_c]
-            reponse = st.radio(
-                "Choisis ta réponse :",
-                options,
-                key=f"radio_{key_qcm}_{st.session_state.session_id}",
-                index=None,
-                label_visibility="collapsed"
-            )
-
-            col_valider, col_espace = st.columns([1, 3])
-            with col_valider:
-                if st.button("Valider", key=f"btn_{key_qcm}"):
-                    st.session_state.qcm_validated[key_qcm] = reponse
-
-            if key_qcm in st.session_state.qcm_validated:
-                if st.session_state.qcm_validated[key_qcm] == reponse_correcte:
-                    st.success("✅ Bravo, c'est la bonne réponse ! 🌟")
+                    st.markdown(f"""
+                    <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px; flex-wrap: wrap;">
+                        <img src="data:image/png;base64,{img_base64}"
+                             style="width: 50px; height: 50px; object-fit: cover; border-radius: 8px; flex-shrink: 0;">
+                        <div style="flex: 1; min-width: 200px;">
+                            <h3 style="margin: 0; font-size: 1.3em; line-height: 1.2;">{titre}</h3>
+                            <p style="margin: 4px 0 0 0; font-size: 0.85em; color: #666;">{theme} • {difficulte}</p>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
                 else:
-                    st.info(f"💡 Ce n'est pas tout à fait ça. La bonne réponse était : **{reponse_correcte}**. Ce n'est pas grave, on peut relire un petit passage ensemble 🙂")
+                    st.subheader(f"📄 {titre}")
 
-            st.markdown("")
+                st.info(texte_contenu)
+                st.caption(f"📝 Ce texte contient **{nb_mots_total} mots**.")
 
-    # Questions ouvertes
-    if questions_ouvertes:
-        st.subheader("✍️ Questions ouvertes")
-        st.caption("Écris ta réponse, puis tu peux voir une proposition pour comparer.")
+                st.markdown("---")
 
-        for i, question in enumerate(questions_ouvertes):
-            q_id, q_texte, proposition, ordre = question
-            key_open = f"{texte_id}_open_{q_id}"
+                # Section 2 : Mesure de fluence
+                st.header("⏱️ Étape 2 : Mesure ta vitesse de lecture")
 
-            # Indicateur de difficulté
-            if ordre == 1:
-                diff_icon = "🟢"
-            elif ordre == 2:
-                diff_icon = "🟡"
-            else:
-                diff_icon = "🟠"
+                col_start, col_stop = st.columns(2)
 
-            st.markdown(f"**{diff_icon} Question {i+1} : {q_texte}**")
+                with col_start:
+                    if st.button("▶️ Démarrer la lecture", disabled=st.session_state.is_reading, use_container_width=True):
+                        st.session_state.is_reading = True
+                        st.session_state.start_time = time.time()
+                        st.session_state.elapsed_time = None
+                        st.session_state.reading_finished = False
+                        st.session_state.result_saved = False
+                        st.rerun()
 
-            st.text_area(
-                "Ta réponse :",
-                key=f"textarea_{key_open}_{st.session_state.session_id}",
-                height=80,
-                label_visibility="collapsed"
-            )
+                with col_stop:
+                    if st.button("⏹️ Arrêter la lecture", disabled=not st.session_state.is_reading, use_container_width=True):
+                        st.session_state.is_reading = False
+                        st.session_state.elapsed_time = time.time() - st.session_state.start_time
+                        st.session_state.reading_finished = True
+                        st.rerun()
 
-            if st.button("💡 Voir une proposition de réponse", key=f"btn_prop_{key_open}"):
-                st.session_state.show_proposition[key_open] = True
+                # Affichage de l'état
+                if st.session_state.is_reading:
+                    st.warning("⏱️ **Lecture en cours...** Lis à voix haute, tranquillement !")
 
-            if st.session_state.show_proposition.get(key_open, False):
-                st.info(f"**Proposition de réponse :** {proposition}")
+                # Résultats de fluence
+                if st.session_state.reading_finished and st.session_state.elapsed_time is not None:
+                    elapsed_seconds = st.session_state.elapsed_time
+                    elapsed_minutes = elapsed_seconds / 60
 
-            st.markdown("")
+                    st.success(f"⏱️ **Temps de lecture : {elapsed_seconds:.1f} secondes**")
 
-    st.markdown("---")
+                    st.markdown("##### Combien de mots as-tu lus ?")
+                    st.caption("Par défaut, c'est le texte entier. L'adulte peut ajuster si besoin.")
 
-    # Section 4 : Repères de fluence
-    with st.expander("📊 Repères de vitesse de lecture en France"):
+                    mots_lus = st.number_input(
+                        "Nombre de mots lus :",
+                        min_value=1,
+                        max_value=nb_mots_total,
+                        value=nb_mots_total,
+                        step=1
+                    )
+
+                    # Calcul des mots par minute
+                    if elapsed_minutes > 0:
+                        mots_par_minute = mots_lus / elapsed_minutes
+
+                        st.markdown("---")
+                        st.markdown(f"""
+                        ### 🎉 Bravo, c'est super !
+
+                        Tu as lu **{mots_lus} mots** en **{elapsed_seconds:.1f} secondes**.
+
+                        **➡️ Ta vitesse : {mots_par_minute:.0f} mots par minute**
+
+                        Continue comme ça, tu progresses bien ! 📚✨
+                        """)
+
+                        # Sauvegarder le résultat
+                        if not st.session_state.result_saved:
+                            save_resultat(texte_id, elapsed_seconds, mots_lus, mots_par_minute)
+                            st.session_state.result_saved = True
+
+                st.markdown("---")
+
+                # Section 3 : Compréhension
+                st.header("🧠 Étape 3 : As-tu bien compris ?")
+                st.markdown("Réponds aux questions pour vérifier que tu as bien compris le texte. Les questions vont du plus simple au plus réfléchi. Pas de stress, c'est pour apprendre ! 😊")
+
+                # Récupérer les questions
+                qcm_list = get_qcm_by_texte(texte_id)
+                questions_ouvertes = get_questions_ouvertes_by_texte(texte_id)
+
+                # QCM
+                if qcm_list:
+                    st.subheader("📝 Questions à choix multiple")
+                    st.caption("Du plus simple au plus difficile")
+
+                    for i, qcm in enumerate(qcm_list):
+                        qcm_id, question, opt_a, opt_b, opt_c, reponse_correcte, ordre = qcm
+                        key_qcm = f"{texte_id}_qcm_{qcm_id}"
+
+                        # Indicateur de difficulté
+                        if ordre == 1:
+                            diff_icon = "🟢"
+                        elif ordre == 2:
+                            diff_icon = "🟡"
+                        else:
+                            diff_icon = "🟠"
+
+                        st.markdown(f"**{diff_icon} Question {i+1} : {question}**")
+
+                        options = [opt_a, opt_b, opt_c]
+                        reponse = st.radio(
+                            "Choisis ta réponse :",
+                            options,
+                            key=f"radio_{key_qcm}_{st.session_state.session_id}",
+                            index=None,
+                            label_visibility="collapsed"
+                        )
+
+                        col_valider, col_espace = st.columns([1, 3])
+                        with col_valider:
+                            if st.button("Valider", key=f"btn_{key_qcm}"):
+                                st.session_state.qcm_validated[key_qcm] = reponse
+
+                        if key_qcm in st.session_state.qcm_validated:
+                            if st.session_state.qcm_validated[key_qcm] == reponse_correcte:
+                                st.success("✅ Bravo, c'est la bonne réponse ! 🌟")
+                            else:
+                                st.info(f"💡 Ce n'est pas tout à fait ça. La bonne réponse était : **{reponse_correcte}**. Ce n'est pas grave, on peut relire un petit passage ensemble 🙂")
+
+                        st.markdown("")
+
+                # Questions ouvertes
+                if questions_ouvertes:
+                    st.subheader("✍️ Questions ouvertes")
+                    st.caption("Écris ta réponse, puis tu peux voir une proposition pour comparer.")
+
+                    for i, question in enumerate(questions_ouvertes):
+                        q_id, q_texte, proposition, ordre = question
+                        key_open = f"{texte_id}_open_{q_id}"
+
+                        # Indicateur de difficulté
+                        if ordre == 1:
+                            diff_icon = "🟢"
+                        elif ordre == 2:
+                            diff_icon = "🟡"
+                        else:
+                            diff_icon = "🟠"
+
+                        st.markdown(f"**{diff_icon} Question {i+1} : {q_texte}**")
+
+                        st.text_area(
+                            "Ta réponse :",
+                            key=f"textarea_{key_open}_{st.session_state.session_id}",
+                            height=80,
+                            label_visibility="collapsed"
+                        )
+
+                        if st.button("💡 Voir une proposition de réponse", key=f"btn_prop_{key_open}"):
+                            st.session_state.show_proposition[key_open] = True
+
+                        if st.session_state.show_proposition.get(key_open, False):
+                            st.info(f"**Proposition de réponse :** {proposition}")
+
+                        st.markdown("")
+
+                st.markdown("---")
+
+                # Section 4 : Repères de fluence
+                with st.expander("📊 Repères de vitesse de lecture en France"):
+                    st.markdown("""
+                    Voici des repères pour se situer. **Chacun avance à son rythme**, l'essentiel est de progresser tranquillement ! 🌱
+
+                    | Âge | Vitesse moyenne (fin d'année) |
+                    |--------|------------------------------|
+                    | 6–7 ans | environ 50 mots/minute |
+                    | 7–8 ans | environ 70 mots/minute |
+                    | 8–9 ans | environ 90-110 mots/minute |
+
+                    *Ces chiffres sont des moyennes. Certains enfants lisent plus vite, d'autres moins vite, et c'est très bien comme ça !*
+
+                    🟢 Question facile • 🟡 Question moyenne • 🟠 Question plus réfléchie
+                    """)
+
+                st.markdown("---")
+
+                # Bouton pour recommencer
+                if st.button("🔄 Nouvelle lecture", use_container_width=True):
+                    # Effacer les états de lecture
+                    st.session_state.is_reading = False
+                    st.session_state.start_time = None
+                    st.session_state.elapsed_time = None
+                    st.session_state.reading_finished = False
+                    st.session_state.qcm_validated = {}
+                    st.session_state.show_proposition = {}
+                    st.session_state.result_saved = False
+
+                    # Incrémenter session_id pour forcer la réinitialisation des widgets
+                    st.session_state.session_id += 1
+
+                    st.rerun()
+
+    # ========== ONGLET CRÉATION IA ==========
+    with tab_creation:
+        st.header("✨ Création IA")
         st.markdown("""
-        Voici des repères pour se situer. **Chacun avance à son rythme**, l'essentiel est de progresser tranquillement ! 🌱
-
-        | Âge | Vitesse moyenne (fin d'année) |
-        |--------|------------------------------|
-        | 6–7 ans | environ 50 mots/minute |
-        | 7–8 ans | environ 70 mots/minute |
-        | 8–9 ans | environ 90-110 mots/minute |
-
-        *Ces chiffres sont des moyennes. Certains enfants lisent plus vite, d'autres moins vite, et c'est très bien comme ça !*
-
-        🟢 Question facile • 🟡 Question moyenne • 🟠 Question plus réfléchie
+        Donne une idée, quelques mots ou une phrase, et l'intelligence artificielle va créer un texte rien que pour toi !
+        C'est magique et amusant ! 🌈
         """)
 
-    st.markdown("---")
+        # Sélection de la tranche d'âge
+        age_creation = st.selectbox(
+            "Ton âge :",
+            list(AGES_VERS_NIVEAUX.keys()),
+            key="creation_age"
+        )
 
-    # Bouton pour recommencer
-    if st.button("🔄 Nouvelle lecture", use_container_width=True):
-        # Effacer les états de lecture
-        st.session_state.is_reading = False
-        st.session_state.start_time = None
-        st.session_state.elapsed_time = None
-        st.session_state.reading_finished = False
-        st.session_state.qcm_validated = {}
-        st.session_state.show_proposition = {}
-        st.session_state.result_saved = False
+        # Sélection du type de contenu
+        mode_creation = st.selectbox(
+            "Que veux-tu créer ?",
+            ["Histoire", "Méditation pour dormir", "Vulgarisation scientifique"],
+            key="creation_mode"
+        )
 
-        # Incrémenter session_id pour forcer la réinitialisation des widgets
-        st.session_state.session_id += 1
+        # Description du mode sélectionné
+        if mode_creation == "Histoire":
+            st.caption("📖 Une histoire imaginative avec des personnages et des aventures douces.")
+        elif mode_creation == "Méditation pour dormir":
+            st.caption("🌙 Un texte calme et apaisant, parfait pour le moment du coucher.")
+        else:
+            st.caption("🔬 Une explication simple d'un phénomène, avec des exemples du quotidien.")
 
-        st.rerun()
+        # Zone de saisie - le placeholder change si un texte existe déjà
+        if st.session_state.generated_text:
+            placeholder_text = "Exemple : change le chat en chien, ajoute un arc-en-ciel, rends l'histoire plus drôle..."
+            label_text = "Modifie le texte :"
+        else:
+            placeholder_text = "Exemple : un chat qui voyage dans l'espace, pourquoi le ciel est bleu, une forêt magique..."
+            label_text = "Ton idée :"
+
+        saisie_utilisateur = st.text_area(
+            label_text,
+            placeholder=placeholder_text,
+            height=100,
+            key=f"creation_input_{st.session_state.session_id}"
+        )
+
+        # Bouton de génération
+        col_gen, col_new = st.columns(2)
+
+        with col_gen:
+            # Le label du bouton change si un texte existe
+            btn_label = "🔄 Modifier" if st.session_state.generated_text else "🪄 Générer"
+
+            if st.button(btn_label, use_container_width=True, type="primary"):
+                if saisie_utilisateur.strip():
+                    # Vérifier si des mots interdits sont présents
+                    mots_interdits_detectes = contains_forbidden_words(saisie_utilisateur)
+
+                    # Nettoyer la saisie (filtrage des mots inappropriés)
+                    saisie_nettoyee = sanitize_user_input(saisie_utilisateur, mode_creation)
+
+                    with st.spinner("✨ Création en cours..."):
+                        # Passer le texte existant pour modification si disponible
+                        texte_genere = generate_ai_text(
+                            age_creation,
+                            mode_creation,
+                            saisie_nettoyee,
+                            existing_text=st.session_state.generated_text
+                        )
+                        st.session_state.generated_text = texte_genere
+
+                    # Effacer l'entrée après génération/modification
+                    st.session_state.session_id += 1
+
+                    st.rerun()
+                else:
+                    st.warning("Écris quelques mots ou une idée pour commencer !")
+
+        with col_new:
+            if st.button("🔄 Nouvelle idée", use_container_width=True):
+                st.session_state.generated_text = None
+                # Incrémenter session_id pour réinitialiser le champ de saisie
+                st.session_state.session_id += 1
+                st.rerun()
+
+        # Affichage du texte généré
+        if st.session_state.generated_text:
+            st.markdown("---")
+            st.markdown("### 📝 Ton texte")
+            st.markdown(st.session_state.generated_text)
+
+            # Compter les mots du texte généré
+            nb_mots_genere = compter_mots(st.session_state.generated_text)
+            st.caption(f"Ce texte contient **{nb_mots_genere} mots**.")
 
 if __name__ == "__main__":
     main()
