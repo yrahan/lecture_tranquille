@@ -5,6 +5,25 @@ import os
 from datetime import datetime
 from init_db import init_database
 
+# Mapping entre tranches d'âge et niveaux scolaires
+# Ce mapping permet de garder la compatibilité avec la base de données
+# tout en affichant les tranches d'âge à l'utilisateur
+AGES_VERS_NIVEAUX = {
+    "6–7 ans": "CP",
+    "7–8 ans": "CE1",
+    "8–9 ans": "CE2"
+}
+
+NIVEAUX_VERS_AGES = {v: k for k, v in AGES_VERS_NIVEAUX.items()}
+
+def age_vers_niveau(tranche_age):
+    """Convertit une tranche d'âge en niveau scolaire pour la base de données."""
+    return AGES_VERS_NIVEAUX.get(tranche_age, "CP")
+
+def niveau_vers_age(niveau):
+    """Convertit un niveau scolaire en tranche d'âge pour l'affichage."""
+    return NIVEAUX_VERS_AGES.get(niveau, "6–7 ans")
+
 # Configuration de la page
 st.set_page_config(
     page_title="Lecture tranquille",
@@ -399,7 +418,7 @@ def main():
 
     # Titre principal
     st.title("📖 Lecture tranquille")
-    st.markdown("### Pour les enfants de CP, CE1 et CE2")
+    st.markdown("### Pour les enfants de 6 à 9 ans")
     st.markdown("""
     Bienvenue ! Cette application t'aide à progresser en lecture, à ton rythme.
     Pas de stress, pas de pression : ici, on lit tranquillement et on s'amuse ! 🌟
@@ -412,7 +431,7 @@ def main():
         st.markdown("""
         **Comment utiliser l'application en 3 étapes :**
 
-        1. **Choisir** le niveau (CP, CE1 ou CE2) et un texte adapté
+        1. **Choisir** la tranche d'âge (6–7, 7–8 ou 8–9 ans) et un texte adapté
         2. **Mesurer la fluence** : démarrer le chrono quand l'enfant lit à voix haute, puis l'arrêter
         3. **Vérifier la compréhension** : répondre aux questions ensemble
 
@@ -447,7 +466,8 @@ def main():
     col1, col2 = st.columns(2)
 
     with col1:
-        niveau = st.selectbox("Niveau :", ["CP", "CE1", "CE2"])
+        tranche_age = st.selectbox("Ton âge :", list(AGES_VERS_NIVEAUX.keys()))
+        niveau = age_vers_niveau(tranche_age)
 
     # Récupérer les textes du niveau
     textes = get_textes_by_niveau(niveau)
@@ -657,11 +677,11 @@ def main():
         st.markdown("""
         Voici des repères pour se situer. **Chacun avance à son rythme**, l'essentiel est de progresser tranquillement ! 🌱
 
-        | Niveau | Vitesse moyenne (fin d'année) |
+        | Âge | Vitesse moyenne (fin d'année) |
         |--------|------------------------------|
-        | CP | environ 50 mots/minute |
-        | CE1 | environ 70 mots/minute |
-        | CE2 | environ 90-110 mots/minute |
+        | 6–7 ans | environ 50 mots/minute |
+        | 7–8 ans | environ 70 mots/minute |
+        | 8–9 ans | environ 90-110 mots/minute |
 
         *Ces chiffres sont des moyennes. Certains enfants lisent plus vite, d'autres moins vite, et c'est très bien comme ça !*
 
