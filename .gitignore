@@ -1,23 +1,42 @@
-# Environnements Python / Conda / Mamba
+###############################################
+# 🐍 ENVIRONNEMENTS PYTHON / CONDA / VENV
+###############################################
+# Environnements virtuels (venv, conda, mamba)
 venv/
+.venv/
 .env/
 *.env
 *.egg-info/
-.venv/
 
-# Dossiers Python
+###############################################
+# 🐍 FICHIERS TEMPORAIRES PYTHON
+###############################################
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 
-# VS Code
+###############################################
+# 🧰 CONFIGURATION VS CODE (locale uniquement)
+###############################################
 .vscode/
 
-# Données locales
+###############################################
+# 🗄️ BASES DE DONNÉES LOCALES (jamais en repo)
+###############################################
+# Base SQLite générée en local
 lecture.db
 *.sqlite
 *.db
 
-# Autres fichiers temporaires
+###############################################
+# 🔐 SECRETS & CONFIGURATIONS PRIVÉES
+###############################################
+# Fichier de configuration secrets Streamlit
+.streamlit/secrets.toml
+
+###############################################
+# 🗂️ FICHIERS SYSTÈME / DIVERS
+###############################################
+# Fichier système macOS
 .DS_Store
